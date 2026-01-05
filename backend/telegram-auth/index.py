@@ -14,10 +14,7 @@ import os
 import hashlib
 import secrets
 from datetime import datetime, timezone, timedelta
-from dataclasses import dataclass
 from typing import Optional
-from urllib.parse import urlencode
-
 import psycopg2
 import jwt
 
@@ -35,28 +32,6 @@ def get_env(key: str) -> str:
     if not value:
         raise ValueError(f"Missing environment variable: {key}")
     return value
-
-
-# =============================================================================
-# DATA CLASSES
-# =============================================================================
-
-@dataclass
-class TelegramUser:
-    telegram_id: str
-    username: Optional[str]
-    first_name: Optional[str]
-    last_name: Optional[str]
-    photo_url: Optional[str]
-
-
-@dataclass
-class AuthToken:
-    token: str
-    telegram_user: Optional[TelegramUser]
-    created_at: datetime
-    expires_at: datetime
-    used: bool
 
 
 # =============================================================================
@@ -114,20 +89,6 @@ def ensure_auth_tokens_table(cursor) -> None:
     """)
 
 
-def create_auth_token(cursor, token: str, expires_minutes: int = 10) -> str:
-    """Create temporary auth token for Telegram login."""
-    token_hash = hash_token(token)
-    expires_at = datetime.now(timezone.utc) + timedelta(minutes=expires_minutes)
-
-    cursor.execute("""
-        INSERT INTO telegram_auth_tokens (token_hash, expires_at)
-        VALUES (%s, %s)
-        RETURNING id
-    """, (token_hash, expires_at))
-
-    return token
-
-
 def get_auth_token(cursor, token: str) -> Optional[dict]:
     """Get auth token data by token."""
     token_hash = hash_token(token)
@@ -152,35 +113,6 @@ def get_auth_token(cursor, token: str) -> Optional[dict]:
         "expires_at": row[5],
         "used": row[6],
     }
-
-
-def update_auth_token_with_user(
-    cursor,
-    token: str,
-    telegram_id: str,
-    username: Optional[str],
-    first_name: Optional[str],
-    last_name: Optional[str],
-    photo_url: Optional[str]
-) -> bool:
-    """Update auth token with Telegram user data (called by bot)."""
-    token_hash = hash_token(token)
-
-    cursor.execute("""
-        UPDATE telegram_auth_tokens
-        SET telegram_id = %s,
-            telegram_username = %s,
-            telegram_first_name = %s,
-            telegram_last_name = %s,
-            telegram_photo_url = %s
-        WHERE token_hash = %s
-          AND expires_at > NOW()
-          AND used = FALSE
-          AND telegram_id IS NULL
-        RETURNING id
-    """, (telegram_id, username, first_name, last_name, photo_url, token_hash))
-
-    return cursor.fetchone() is not None
 
 
 def mark_token_used(cursor, token: str) -> bool:
@@ -424,8 +356,13 @@ def handle_callback(cursor, body: dict) -> dict:
     if not token_data:
         return cors_response(404, {"error": "Token not found"})
 
-    # Check if expired
-    if token_data["expires_at"] < datetime.now(timezone.utc):
+    # Check if expired (handle both naive and aware datetime from DB)
+    expires_at = token_data["expires_at"]
+    now = datetime.now(timezone.utc)
+    # Convert to naive UTC for comparison if needed
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if expires_at < now:
         return cors_response(410, {"error": "Token expired"})
 
     # Check if already used
