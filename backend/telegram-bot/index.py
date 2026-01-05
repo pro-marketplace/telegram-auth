@@ -16,6 +16,12 @@ import psycopg2
 import requests
 
 
+def get_schema() -> str:
+    """Get database schema prefix."""
+    schema = os.environ.get("MAIN_DB_SCHEMA", "public")
+    return f"{schema}." if schema else ""
+
+
 def send_message(chat_id: int, text: str, reply_markup: Optional[dict] = None) -> None:
     """Отправка сообщения через Telegram API."""
     bot_token = os.environ["TELEGRAM_BOT_TOKEN"]
@@ -38,12 +44,13 @@ def save_auth_token(
     """Сохраняет токен авторизации в БД и возвращает его."""
     token = str(uuid.uuid4())
     token_hash = hashlib.sha256(token.encode()).hexdigest()
+    schema = get_schema()
 
     conn = psycopg2.connect(os.environ["DATABASE_URL"])
     cursor = conn.cursor()
 
-    cursor.execute("""
-        INSERT INTO telegram_auth_tokens
+    cursor.execute(f"""
+        INSERT INTO {schema}telegram_auth_tokens
         (token_hash, telegram_id, telegram_username, telegram_first_name,
          telegram_last_name, telegram_photo_url, expires_at)
         VALUES (%s, %s, %s, %s, %s, %s, %s)

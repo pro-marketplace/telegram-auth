@@ -27,6 +27,12 @@ def get_db_connection():
     return psycopg2.connect(os.environ["DATABASE_URL"])
 
 
+def get_schema() -> str:
+    """Get database schema prefix."""
+    schema = os.environ.get("MAIN_DB_SCHEMA", "public")
+    return f"{schema}." if schema else ""
+
+
 def get_env(key: str) -> str:
     value = os.environ.get(key)
     if not value:
@@ -55,46 +61,19 @@ def create_jwt(user_id: int, secret: str, expires_in: int = 900) -> str:
     return jwt.encode(payload, secret, algorithm="HS256")
 
 
-
-
 # =============================================================================
 # DATABASE OPERATIONS
 # =============================================================================
 
-def ensure_auth_tokens_table(cursor) -> None:
-    """Create telegram_auth_tokens table if not exists."""
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS telegram_auth_tokens (
-            id SERIAL PRIMARY KEY,
-            token_hash VARCHAR(64) UNIQUE NOT NULL,
-            telegram_id VARCHAR(50),
-            telegram_username VARCHAR(255),
-            telegram_first_name VARCHAR(255),
-            telegram_last_name VARCHAR(255),
-            telegram_photo_url TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            expires_at TIMESTAMP NOT NULL,
-            used BOOLEAN DEFAULT FALSE
-        )
-    """)
-    cursor.execute("""
-        CREATE INDEX IF NOT EXISTS idx_telegram_auth_tokens_hash
-        ON telegram_auth_tokens(token_hash)
-    """)
-    cursor.execute("""
-        CREATE INDEX IF NOT EXISTS idx_telegram_auth_tokens_expires
-        ON telegram_auth_tokens(expires_at)
-    """)
-
-
 def get_auth_token(cursor, token: str) -> Optional[dict]:
     """Get auth token data by token."""
     token_hash = hash_token(token)
+    schema = get_schema()
 
-    cursor.execute("""
+    cursor.execute(f"""
         SELECT telegram_id, telegram_username, telegram_first_name,
                telegram_last_name, telegram_photo_url, expires_at, used
-        FROM telegram_auth_tokens
+        FROM {schema}telegram_auth_tokens
         WHERE token_hash = %s
     """, (token_hash,))
 
@@ -116,9 +95,10 @@ def get_auth_token(cursor, token: str) -> Optional[dict]:
 def mark_token_used(cursor, token: str) -> bool:
     """Mark token as used."""
     token_hash = hash_token(token)
+    schema = get_schema()
 
-    cursor.execute("""
-        UPDATE telegram_auth_tokens
+    cursor.execute(f"""
+        UPDATE {schema}telegram_auth_tokens
         SET used = TRUE
         WHERE token_hash = %s AND used = FALSE
         RETURNING id
@@ -129,17 +109,19 @@ def mark_token_used(cursor, token: str) -> bool:
 
 def cleanup_expired_tokens(cursor) -> None:
     """Remove expired auth tokens."""
-    cursor.execute("""
-        DELETE FROM telegram_auth_tokens
+    schema = get_schema()
+    cursor.execute(f"""
+        DELETE FROM {schema}telegram_auth_tokens
         WHERE expires_at < NOW() OR (used = TRUE AND created_at < NOW() - INTERVAL '1 hour')
     """)
 
 
 def find_user_by_telegram_id(cursor, telegram_id: str) -> Optional[dict]:
     """Find user by Telegram ID."""
-    cursor.execute("""
+    schema = get_schema()
+    cursor.execute(f"""
         SELECT id, email, name, avatar_url, telegram_id
-        FROM users
+        FROM {schema}users
         WHERE telegram_id = %s
     """, (telegram_id,))
 
@@ -164,6 +146,7 @@ def create_or_update_user(
     photo_url: Optional[str]
 ) -> dict:
     """Create new user or update existing one."""
+    schema = get_schema()
 
     # Build display name
     name_parts = []
@@ -178,8 +161,8 @@ def create_or_update_user(
 
     if existing:
         # Update existing user
-        cursor.execute("""
-            UPDATE users
+        cursor.execute(f"""
+            UPDATE {schema}users
             SET name = COALESCE(%s, name),
                 avatar_url = COALESCE(%s, avatar_url),
                 last_login_at = NOW(),
@@ -189,8 +172,8 @@ def create_or_update_user(
         """, (display_name, photo_url, telegram_id))
     else:
         # Create new user
-        cursor.execute("""
-            INSERT INTO users (telegram_id, name, avatar_url, email_verified, password_hash, created_at, updated_at, last_login_at)
+        cursor.execute(f"""
+            INSERT INTO {schema}users (telegram_id, name, avatar_url, email_verified, password_hash, created_at, updated_at, last_login_at)
             VALUES (%s, %s, %s, TRUE, '', NOW(), NOW(), NOW())
             RETURNING id, email, name, avatar_url, telegram_id
         """, (telegram_id, display_name, photo_url))
@@ -207,17 +190,19 @@ def create_or_update_user(
 
 def save_refresh_token(cursor, user_id: int, token_hash: str, expires_at: datetime) -> None:
     """Save hashed refresh token to DB."""
-    cursor.execute("""
-        INSERT INTO refresh_tokens (user_id, token_hash, expires_at)
+    schema = get_schema()
+    cursor.execute(f"""
+        INSERT INTO {schema}refresh_tokens (user_id, token_hash, expires_at)
         VALUES (%s, %s, %s)
     """, (user_id, token_hash, expires_at))
 
 
 def find_refresh_token(cursor, token_hash: str) -> Optional[dict]:
     """Find refresh token by hash."""
-    cursor.execute("""
+    schema = get_schema()
+    cursor.execute(f"""
         SELECT user_id, expires_at
-        FROM refresh_tokens
+        FROM {schema}refresh_tokens
         WHERE token_hash = %s AND expires_at > NOW()
     """, (token_hash,))
 
@@ -229,14 +214,16 @@ def find_refresh_token(cursor, token_hash: str) -> Optional[dict]:
 
 def delete_refresh_token(cursor, token_hash: str) -> None:
     """Delete refresh token."""
-    cursor.execute("DELETE FROM refresh_tokens WHERE token_hash = %s", (token_hash,))
+    schema = get_schema()
+    cursor.execute(f"DELETE FROM {schema}refresh_tokens WHERE token_hash = %s", (token_hash,))
 
 
 def get_user_by_id(cursor, user_id: int) -> Optional[dict]:
     """Get user by ID."""
-    cursor.execute("""
+    schema = get_schema()
+    cursor.execute(f"""
         SELECT id, email, name, avatar_url, telegram_id
-        FROM users WHERE id = %s
+        FROM {schema}users WHERE id = %s
     """, (user_id,))
 
     row = cursor.fetchone()
@@ -253,7 +240,8 @@ def get_user_by_id(cursor, user_id: int) -> Optional[dict]:
 
 def cleanup_expired_refresh_tokens(cursor) -> None:
     """Remove expired refresh tokens."""
-    cursor.execute("DELETE FROM refresh_tokens WHERE expires_at < NOW()")
+    schema = get_schema()
+    cursor.execute(f"DELETE FROM {schema}refresh_tokens WHERE expires_at < NOW()")
 
 
 # =============================================================================
@@ -427,9 +415,6 @@ def handler(event, context):
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-
-        # Ensure tables exist
-        ensure_auth_tokens_table(cursor)
 
         # Cleanup expired tokens periodically
         cleanup_expired_tokens(cursor)

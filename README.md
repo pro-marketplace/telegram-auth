@@ -57,20 +57,20 @@ SSO авторизация через Telegram бота. **1 функция** с
 **ОБЯЗАТЕЛЬНО вызови тулу `put_secret` для КАЖДОГО секрета!**
 
 ```python
-# Для auth функции
+# Для auth и bot функций
 put_secret("JWT_SECRET", "<сгенерируй: 64 hex символа>")
-
-# Для bot функции
 put_secret("TELEGRAM_BOT_TOKEN", "<токен бота от BotFather>")
 put_secret("TELEGRAM_BOT_USERNAME", "<username бота без @>")
 put_secret("SITE_URL", "https://{домен-пользователя}")
 put_secret("TELEGRAM_WEBHOOK_SECRET", "<секретный токен для webhook>")
+put_secret("MAIN_DB_SCHEMA", "<схема БД, например: public>")
 ```
 
 - Вызывай `put_secret` для КАЖДОГО секрета отдельно
-- **JWT_SECRET генерируй сам** (64 hex символа)
+- **JWT_SECRET** — генерируй сам (64 hex символа)
 - **TELEGRAM_BOT_TOKEN** — получи у пользователя (от BotFather)
 - **TELEGRAM_WEBHOOK_SECRET** — сгенерируй случайную строку (1-256 символов)
+- **MAIN_DB_SCHEMA** — схема БД проекта (обычно `public` или имя проекта)
 - Покажи пользователю в чате каждый вызов тулы
 
 ## После установки скажи пользователю
