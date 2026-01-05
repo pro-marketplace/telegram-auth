@@ -55,8 +55,6 @@ def create_jwt(user_id: int, secret: str, expires_in: int = 900) -> str:
     return jwt.encode(payload, secret, algorithm="HS256")
 
 
-def verify_bot_secret(request_secret: str, expected_secret: str) -> bool:
-    return secrets.compare_digest(request_secret, expected_secret)
 
 
 # =============================================================================
@@ -266,8 +264,8 @@ def get_cors_headers() -> dict:
     allowed_origins = os.environ.get("ALLOWED_ORIGINS", "*")
     return {
         "Access-Control-Allow-Origin": allowed_origins,
-        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type, X-Bot-Secret",
+        "Access-Control-Allow-Methods": "POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type",
     }
 
 
@@ -290,56 +288,6 @@ def options_response() -> dict:
 # =============================================================================
 # ACTION HANDLERS
 # =============================================================================
-
-def handle_init_auth(cursor, body: dict, headers: dict) -> dict:
-    """
-    POST ?action=init-auth
-    Called by Telegram bot to create auth token with user data.
-    Bot sends user data, API creates token and returns auth URL.
-    """
-    bot_secret = get_env("TELEGRAM_BOT_SECRET")
-    site_url = get_env("SITE_URL")
-
-    # Verify bot secret
-    request_secret = headers.get("x-bot-secret", "")
-    if not verify_bot_secret(request_secret, bot_secret):
-        return cors_response(401, {"error": "Invalid bot secret"})
-
-    telegram_id = body.get("telegram_id")
-    if not telegram_id:
-        return cors_response(400, {"error": "Missing telegram_id"})
-
-    # Generate token
-    token = generate_token()
-    token_hash = hash_token(token)
-    expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
-
-    # Create token with user data already filled
-    cursor.execute("""
-        INSERT INTO telegram_auth_tokens
-        (token_hash, telegram_id, telegram_username, telegram_first_name,
-         telegram_last_name, telegram_photo_url, expires_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
-        RETURNING id
-    """, (
-        token_hash,
-        str(telegram_id),
-        body.get("username"),
-        body.get("first_name"),
-        body.get("last_name"),
-        body.get("photo_url"),
-        expires_at
-    ))
-
-    # Build auth URL for user to click
-    auth_url = f"{site_url}/auth/telegram/callback?token={token}"
-
-    return cors_response(200, {
-        "success": True,
-        "token": token,
-        "auth_url": auth_url,
-    })
-
 
 def handle_callback(cursor, body: dict) -> dict:
     """
@@ -492,9 +440,7 @@ def handler(event, context):
         cleanup_expired_refresh_tokens(cursor)
 
         # Route to action handler
-        if action == "init-auth" and method == "POST":
-            response = handle_init_auth(cursor, body, headers)
-        elif action == "callback" and method == "POST":
+        if action == "callback" and method == "POST":
             response = handle_callback(cursor, body)
         elif action == "refresh" and method == "POST":
             response = handle_refresh(cursor, body)
