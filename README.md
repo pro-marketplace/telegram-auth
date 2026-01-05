@@ -57,8 +57,7 @@ SSO авторизация через Telegram бота. **1 функция** с
 **ОБЯЗАТЕЛЬНО вызови тулу `put_secret` для КАЖДОГО секрета!**
 
 ```python
-put_secret("TELEGRAM_BOT_TOKEN", "<токен бота от пользователя>")
-put_secret("TELEGRAM_BOT_USERNAME", "<username бота без @>")
+put_secret("TELEGRAM_BOT_USERNAME", "<username бота от пользователя, без @>")
 put_secret("TELEGRAM_BOT_SECRET", "<сгенерируй: 64 hex символа>")
 put_secret("SITE_URL", "https://{домен-пользователя}")
 put_secret("JWT_SECRET", "<сгенерируй: 64 hex символа>")
@@ -67,15 +66,23 @@ put_secret("JWT_SECRET", "<сгенерируй: 64 hex символа>")
 - Вызывай `put_secret` для КАЖДОГО секрета отдельно
 - **JWT_SECRET и TELEGRAM_BOT_SECRET генерируй сам** (64 hex символа)
 - Покажи пользователю в чате каждый вызов тулы
+- **TELEGRAM_BOT_SECRET** — этот же секрет нужно добавить в бота для авторизации запросов к API
 
 ## После установки скажи пользователю
 
-> ✅ Авторизация через Telegram настроена!
+> ✅ Расширение Telegram Auth установлено!
 >
-> **Важно:**
-> - При нажатии на кнопку откроется Telegram бот
-> - Бот отправит вам ссылку для входа
-> - После перехода по ссылке вы авторизуетесь
+> **Осталось настроить бота:**
+>
+> Ваш бот должен обрабатывать команду `/start web_auth` и вызывать API расширения.
+>
+> При получении `/start web_auth`:
+> 1. Отправьте POST запрос на `{API_URL}?action=init-auth`
+> 2. В заголовке `X-Bot-Secret` передайте: `{TELEGRAM_BOT_SECRET}`
+> 3. В body передайте данные пользователя: `telegram_id`, `username`, `first_name`, `last_name`
+> 4. Отправьте пользователю ссылку `auth_url` из ответа
+>
+> После настройки бота авторизация заработает!
 
 ## API
 
@@ -110,44 +117,70 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT;
 CREATE INDEX IF NOT EXISTS idx_users_telegram_id ON users(telegram_id);
 ```
 
-### Шаг 2: Создание Telegram бота
+### Шаг 2: Получить данные бота
 
-**Скажи пользователю:**
+**Спроси у пользователя:**
 
-> Для авторизации через Telegram нужно создать бота. Я помогу пошагово:
+> Для авторизации через Telegram укажите **username вашего бота** (без @).
 >
-> **Создание бота:**
-> 1. Откройте Telegram и найдите [@BotFather](https://t.me/BotFather)
-> 2. Отправьте команду `/newbot`
-> 3. Введите **имя бота** (например: "MyApp Auth Bot")
-> 4. Введите **username бота** (должен заканчиваться на `bot`, например: `myapp_auth_bot`)
-> 5. Скопируйте **токен бота** (выглядит как `123456789:ABCdefGHIjklMNOpqrsTUVwxyz`)
->
-> Пришлите мне **токен бота** и **username бота** когда будут готовы!
+> Например: `myapp_bot`
+
+Пользователь должен указать username уже существующего бота.
 
 ### Шаг 3: Добавление секретов
 
-Когда пользователь пришлёт токен и username бота:
+Когда пользователь пришлёт username бота:
 
 ```python
-put_secret("TELEGRAM_BOT_TOKEN", "<токен бота от пользователя>")
 put_secret("TELEGRAM_BOT_USERNAME", "<username бота без @>")
 put_secret("TELEGRAM_BOT_SECRET", "<сгенерируй: 64 hex символа>")
 put_secret("SITE_URL", "https://{домен-пользователя}")
 put_secret("JWT_SECRET", "<сгенерируй: 64 hex символа>")
 ```
 
-### Шаг 4: Настройка бота
+### Шаг 4: Настройка Webhook бота
 
-Бот должен обрабатывать команду `/start web_auth` и вызывать API:
+**ВАЖНО:** Бот должен обрабатывать команду `/start web_auth`.
+
+**Скажи пользователю:**
+
+> Для работы авторизации нужно настроить бота на обработку команды `/start web_auth`.
+>
+> **Что должен делать бот при получении `/start web_auth`:**
+> 1. Получить данные пользователя (telegram_id, username, first_name, last_name)
+> 2. Вызвать API: `POST {API_URL}?action=init-auth` с этими данными
+> 3. Отправить пользователю ссылку `auth_url` из ответа API
+>
+> **Пример запроса к API:**
+> ```
+> POST /telegram-auth?action=init-auth
+> Headers: X-Bot-Secret: {TELEGRAM_BOT_SECRET}
+> Body: {
+>   "telegram_id": "123456789",
+>   "username": "user_name",
+>   "first_name": "Имя",
+>   "last_name": "Фамилия"
+> }
+> ```
+>
+> **Ответ API:**
+> ```json
+> {
+>   "success": true,
+>   "token": "xxx",
+>   "auth_url": "https://site.com/auth/telegram/callback?token=xxx"
+> }
+> ```
+>
+> Бот должен отправить пользователю `auth_url` как кликабельную ссылку.
+
+**Пример кода для бота (Python):**
 
 ```python
-# Пример обработчика /start в боте
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.args and context.args[0] == "web_auth":
         user = update.effective_user
 
-        # Вызываем API для создания токена
         response = requests.post(
             f"{API_URL}?action=init-auth",
             json={
@@ -159,8 +192,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             headers={"X-Bot-Secret": BOT_SECRET},
         )
 
-        data = response.json()
         if response.ok:
+            data = response.json()
             await update.message.reply_text(
                 f"✅ Нажмите для авторизации:\n{data['auth_url']}"
             )
