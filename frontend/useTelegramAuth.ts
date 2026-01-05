@@ -2,7 +2,7 @@
  * Telegram Auth Extension - useTelegramAuth Hook
  *
  * React hook for Telegram bot authentication.
- * Uses polling to check auth status after redirect to bot.
+ * Simple flow: button opens bot -> bot sends link -> callback page exchanges token.
  */
 import { useState, useCallback, useEffect, useRef } from "react";
 
@@ -21,32 +21,30 @@ export interface User {
 }
 
 interface AuthApiUrls {
-  authUrl: string;
-  checkAuth: string;
+  callback: string;
   refresh: string;
   logout: string;
 }
 
 interface UseTelegramAuthOptions {
   apiUrls: AuthApiUrls;
+  /** Telegram bot username (without @) */
+  botUsername: string;
   onAuthChange?: (user: User | null) => void;
   autoRefresh?: boolean;
   refreshBeforeExpiry?: number;
-  /** Polling interval in ms while waiting for bot auth (default: 2000) */
-  pollingInterval?: number;
-  /** Max polling time in ms (default: 600000 = 10 min) */
-  pollingTimeout?: number;
 }
 
 interface UseTelegramAuthReturn {
   user: User | null;
   isAuthenticated: boolean;
   isLoading: boolean;
-  isWaitingForBot: boolean;
   error: string | null;
   accessToken: string | null;
-  login: () => Promise<void>;
-  cancelLogin: () => void;
+  /** Opens Telegram bot in new tab */
+  login: () => void;
+  /** Exchange token for JWT (call from callback page) */
+  handleCallback: (token: string) => Promise<boolean>;
   logout: () => Promise<void>;
   refreshToken: () => Promise<boolean>;
   getAuthHeader: () => { Authorization: string } | {};
@@ -78,36 +76,26 @@ function clearStoredRefreshToken(): void {
 export function useTelegramAuth(options: UseTelegramAuthOptions): UseTelegramAuthReturn {
   const {
     apiUrls,
+    botUsername,
     onAuthChange,
     autoRefresh = true,
     refreshBeforeExpiry = 60,
-    pollingInterval = 2000,
-    pollingTimeout = 600000,
   } = options;
 
   const [user, setUser] = useState<User | null>(null);
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [isWaitingForBot, setIsWaitingForBot] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pollingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pollingStartRef = useRef<number>(0);
-  const currentTokenRef = useRef<string | null>(null);
 
   const clearAuth = useCallback(() => {
     if (refreshTimerRef.current) {
       clearTimeout(refreshTimerRef.current);
     }
-    if (pollingTimerRef.current) {
-      clearTimeout(pollingTimerRef.current);
-    }
     setAccessToken(null);
     setUser(null);
-    setIsWaitingForBot(false);
     clearStoredRefreshToken();
-    currentTokenRef.current = null;
   }, []);
 
   const scheduleRefresh = useCallback(
@@ -175,9 +163,6 @@ export function useTelegramAuth(options: UseTelegramAuthOptions): UseTelegramAut
       if (refreshTimerRef.current) {
         clearTimeout(refreshTimerRef.current);
       }
-      if (pollingTimerRef.current) {
-        clearTimeout(pollingTimerRef.current);
-      }
     };
   }, [refreshTokenFn]);
 
@@ -187,107 +172,48 @@ export function useTelegramAuth(options: UseTelegramAuthOptions): UseTelegramAut
   }, [user, onAuthChange]);
 
   /**
-   * Poll for auth status
+   * Open Telegram bot - just redirect, no API call
    */
-  const pollAuthStatus = useCallback(async (token: string): Promise<void> => {
-    // Check timeout
-    if (Date.now() - pollingStartRef.current > pollingTimeout) {
-      setError("Authentication timeout. Please try again.");
-      setIsWaitingForBot(false);
-      setIsLoading(false);
-      return;
-    }
-
-    try {
-      const response = await fetch(`${apiUrls.checkAuth}&token=${token}`);
-      const data = await response.json();
-
-      if (data.status === "pending") {
-        // Still waiting for bot - continue polling
-        pollingTimerRef.current = setTimeout(() => {
-          pollAuthStatus(token);
-        }, pollingInterval);
-        return;
-      }
-
-      if (data.status === "authenticated") {
-        // Success!
-        setAccessToken(data.access_token);
-        setUser(data.user);
-        setStoredRefreshToken(data.refresh_token);
-        scheduleRefresh(data.expires_in, refreshTokenFn);
-        setIsWaitingForBot(false);
-        setIsLoading(false);
-        return;
-      }
-
-      if (data.status === "expired" || data.status === "used") {
-        setError("Token expired. Please try again.");
-        setIsWaitingForBot(false);
-        setIsLoading(false);
-        return;
-      }
-
-      // Unknown status
-      setError(data.error || "Authentication failed");
-      setIsWaitingForBot(false);
-      setIsLoading(false);
-    } catch (err) {
-      // Network error - retry
-      pollingTimerRef.current = setTimeout(() => {
-        pollAuthStatus(token);
-      }, pollingInterval);
-    }
-  }, [apiUrls.checkAuth, pollingInterval, pollingTimeout, scheduleRefresh, refreshTokenFn]);
+  const login = useCallback(() => {
+    const botUrl = `https://t.me/${botUsername}?start=web_auth`;
+    window.open(botUrl, "_blank");
+  }, [botUsername]);
 
   /**
-   * Start Telegram login flow
+   * Exchange token for JWT (call from callback page)
    */
-  const login = useCallback(async () => {
+  const handleCallback = useCallback(async (token: string): Promise<boolean> => {
     setIsLoading(true);
     setError(null);
 
     try {
-      const response = await fetch(apiUrls.authUrl, {
-        method: "GET",
+      const response = await fetch(apiUrls.callback, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token }),
       });
 
       const data = await response.json();
 
       if (!response.ok) {
-        setError(data.error || "Failed to get auth URL");
+        setError(data.error || "Authentication failed");
         setIsLoading(false);
-        return;
+        return false;
       }
 
-      // Store token for polling
-      currentTokenRef.current = data.token;
-      pollingStartRef.current = Date.now();
-      setIsWaitingForBot(true);
-
-      // Open Telegram bot in new tab
-      window.open(data.bot_url, "_blank");
-
-      // Start polling for auth status
-      pollAuthStatus(data.token);
+      // Set auth data
+      setAccessToken(data.access_token);
+      setUser(data.user);
+      setStoredRefreshToken(data.refresh_token);
+      scheduleRefresh(data.expires_in, refreshTokenFn);
+      setIsLoading(false);
+      return true;
     } catch (err) {
       setError("Network error");
       setIsLoading(false);
+      return false;
     }
-  }, [apiUrls.authUrl, pollAuthStatus]);
-
-  /**
-   * Cancel login process
-   */
-  const cancelLogin = useCallback(() => {
-    if (pollingTimerRef.current) {
-      clearTimeout(pollingTimerRef.current);
-    }
-    setIsWaitingForBot(false);
-    setIsLoading(false);
-    setError(null);
-    currentTokenRef.current = null;
-  }, []);
+  }, [apiUrls.callback, scheduleRefresh, refreshTokenFn]);
 
   /**
    * Logout user
@@ -320,11 +246,10 @@ export function useTelegramAuth(options: UseTelegramAuthOptions): UseTelegramAut
     user,
     isAuthenticated: !!user && !!accessToken,
     isLoading,
-    isWaitingForBot,
     error,
     accessToken,
     login,
-    cancelLogin,
+    handleCallback,
     logout,
     refreshToken: refreshTokenFn,
     getAuthHeader,

@@ -2,6 +2,7 @@
  * Telegram Auth Extension - Telegram Login Button
  *
  * Ready-to-use Telegram login button component.
+ * Just opens Telegram bot - no API calls on click.
  */
 import React from "react";
 import { Button } from "@/components/ui/button";
@@ -13,20 +14,14 @@ import { Button } from "@/components/ui/button";
 interface TelegramLoginButtonProps {
   /** Click handler - call auth.login() from useTelegramAuth */
   onClick: () => void;
-  /** Loading state */
+  /** Loading state (for initial session restore) */
   isLoading?: boolean;
-  /** Waiting for bot confirmation */
-  isWaitingForBot?: boolean;
   /** Button text */
   buttonText?: string;
-  /** Text shown while waiting for bot */
-  waitingText?: string;
   /** CSS class */
   className?: string;
   /** Disabled state */
   disabled?: boolean;
-  /** Cancel handler for waiting state */
-  onCancel?: () => void;
 }
 
 // =============================================================================
@@ -82,50 +77,22 @@ function TelegramIcon({ className }: { className?: string }) {
 export function TelegramLoginButton({
   onClick,
   isLoading = false,
-  isWaitingForBot = false,
   buttonText = "Войти через Telegram",
-  waitingText = "Ожидание...",
   className = "",
   disabled = false,
-  onCancel,
 }: TelegramLoginButtonProps): React.ReactElement {
-  const showSpinner = isLoading || isWaitingForBot;
-  const displayText = isWaitingForBot ? waitingText : isLoading ? "Загрузка..." : buttonText;
-
-  if (isWaitingForBot && onCancel) {
-    return (
-      <div className="flex flex-col gap-2">
-        <Button
-          disabled
-          className={`bg-[#0088cc] hover:bg-[#0077b5] text-white ${className}`}
-        >
-          <Spinner className="!w-5 !h-5 mr-2 flex-shrink-0" />
-          {waitingText}
-        </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={onCancel}
-          className="text-muted-foreground"
-        >
-          Отмена
-        </Button>
-      </div>
-    );
-  }
-
   return (
     <Button
       onClick={onClick}
-      disabled={disabled || showSpinner}
+      disabled={disabled || isLoading}
       className={`bg-[#0088cc] hover:bg-[#0077b5] text-white ${className}`}
     >
-      {showSpinner ? (
+      {isLoading ? (
         <Spinner className="!w-5 !h-5 mr-2 flex-shrink-0" />
       ) : (
         <TelegramIcon className="!w-5 !h-5 mr-2 flex-shrink-0" />
       )}
-      {displayText}
+      {isLoading ? "Загрузка..." : buttonText}
     </Button>
   );
 }

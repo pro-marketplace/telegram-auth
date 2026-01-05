@@ -27,7 +27,7 @@ import jwt
 # =============================================================================
 
 def get_db_connection():
-    return psycopg2.connect(os.environ["DB_URL"])
+    return psycopg2.connect(os.environ["DATABASE_URL"])
 
 
 def get_env(key: str) -> str:
@@ -359,71 +359,63 @@ def options_response() -> dict:
 # ACTION HANDLERS
 # =============================================================================
 
-def handle_auth_url(cursor) -> dict:
+def handle_init_auth(cursor, body: dict, headers: dict) -> dict:
     """
-    GET ?action=auth-url
-    Generate temporary token and return Telegram bot URL.
-    """
-    bot_username = get_env("TELEGRAM_BOT_USERNAME")
-    site_url = get_env("SITE_URL")
-
-    # Generate temporary token
-    token = generate_token()
-    create_auth_token(cursor, token)
-
-    # Build Telegram bot deep link
-    # Bot will receive /start {token} command
-    bot_url = f"https://t.me/{bot_username}?start={token}"
-
-    return cors_response(200, {
-        "bot_url": bot_url,
-        "token": token,
-        "check_url": f"{site_url}/auth/telegram/check?token={token}",
-    })
-
-
-def handle_bot_callback(cursor, body: dict, headers: dict) -> dict:
-    """
-    POST ?action=bot-callback
-    Called by Telegram bot when user authorizes.
-    Bot sends user data + token to link them together.
+    POST ?action=init-auth
+    Called by Telegram bot to create auth token with user data.
+    Bot sends user data, API creates token and returns auth URL.
     """
     bot_secret = get_env("TELEGRAM_BOT_SECRET")
+    site_url = get_env("SITE_URL")
 
     # Verify bot secret
     request_secret = headers.get("x-bot-secret", "")
     if not verify_bot_secret(request_secret, bot_secret):
         return cors_response(401, {"error": "Invalid bot secret"})
 
-    token = body.get("token")
     telegram_id = body.get("telegram_id")
+    if not telegram_id:
+        return cors_response(400, {"error": "Missing telegram_id"})
 
-    if not token or not telegram_id:
-        return cors_response(400, {"error": "Missing token or telegram_id"})
+    # Generate token
+    token = generate_token()
+    token_hash = hash_token(token)
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
 
-    # Update token with user data
-    success = update_auth_token_with_user(
-        cursor,
-        token=token,
-        telegram_id=str(telegram_id),
-        username=body.get("username"),
-        first_name=body.get("first_name"),
-        last_name=body.get("last_name"),
-        photo_url=body.get("photo_url"),
-    )
+    # Create token with user data already filled
+    cursor.execute("""
+        INSERT INTO telegram_auth_tokens
+        (token_hash, telegram_id, telegram_username, telegram_first_name,
+         telegram_last_name, telegram_photo_url, expires_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        RETURNING id
+    """, (
+        token_hash,
+        str(telegram_id),
+        body.get("username"),
+        body.get("first_name"),
+        body.get("last_name"),
+        body.get("photo_url"),
+        expires_at
+    ))
 
-    if not success:
-        return cors_response(400, {"error": "Token expired or already used"})
+    # Build auth URL for user to click
+    auth_url = f"{site_url}/auth/telegram/callback?token={token}"
 
-    return cors_response(200, {"success": True})
+    return cors_response(200, {
+        "success": True,
+        "token": token,
+        "auth_url": auth_url,
+    })
 
 
-def handle_check_auth(cursor, params: dict) -> dict:
+def handle_callback(cursor, body: dict) -> dict:
     """
-    GET ?action=check-auth&token=xxx
-    Frontend polls this to check if user completed Telegram auth.
+    POST ?action=callback
+    Frontend calls this with token to exchange for JWT.
+    Like standard OAuth callback.
     """
-    token = params.get("token")
+    token = body.get("token")
     if not token:
         return cors_response(400, {"error": "Missing token"})
 
@@ -434,17 +426,17 @@ def handle_check_auth(cursor, params: dict) -> dict:
 
     # Check if expired
     if token_data["expires_at"] < datetime.now(timezone.utc):
-        return cors_response(410, {"error": "Token expired", "status": "expired"})
+        return cors_response(410, {"error": "Token expired"})
 
     # Check if already used
     if token_data["used"]:
-        return cors_response(410, {"error": "Token already used", "status": "used"})
+        return cors_response(410, {"error": "Token already used"})
 
-    # Check if user data is filled (bot called back)
+    # Check if user data exists
     if not token_data["telegram_id"]:
-        return cors_response(200, {"status": "pending"})
+        return cors_response(400, {"error": "Token not authenticated"})
 
-    # User authenticated via bot - create session
+    # Get JWT secret
     jwt_secret = get_env("JWT_SECRET")
     if len(jwt_secret) < 32:
         return cors_response(500, {"error": "Server configuration error"})
@@ -471,7 +463,6 @@ def handle_check_auth(cursor, params: dict) -> dict:
     save_refresh_token(cursor, user["id"], refresh_token_hash, refresh_expires)
 
     return cors_response(200, {
-        "status": "authenticated",
         "access_token": access_token,
         "refresh_token": refresh_token,
         "expires_in": 900,
@@ -564,12 +555,10 @@ def handler(event, context):
         cleanup_expired_refresh_tokens(cursor)
 
         # Route to action handler
-        if action == "auth-url" and method == "GET":
-            response = handle_auth_url(cursor)
-        elif action == "bot-callback" and method == "POST":
-            response = handle_bot_callback(cursor, body, headers)
-        elif action == "check-auth" and method == "GET":
-            response = handle_check_auth(cursor, params)
+        if action == "init-auth" and method == "POST":
+            response = handle_init_auth(cursor, body, headers)
+        elif action == "callback" and method == "POST":
+            response = handle_callback(cursor, body)
         elif action == "refresh" and method == "POST":
             response = handle_refresh(cursor, body)
         elif action == "logout" and method == "POST":
