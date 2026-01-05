@@ -128,13 +128,12 @@ put_secret("JWT_SECRET", "<сгенерируй: 64 hex символа>")
 
 ### Шаг 4: Создание бот-функции (Cloud Function)
 
-Бот развёртывается как отдельная облачная функция с webhook. Использует aiogram 3.x.
+Бот развёртывается как отдельная облачная функция с webhook.
 
 **Создай функцию `/backend/telegram-bot/`:**
 
 ```python
 # /backend/telegram-bot/index.py
-import asyncio
 import json
 import os
 import uuid
@@ -142,21 +141,16 @@ import hashlib
 from datetime import datetime, timezone, timedelta
 
 import psycopg2
-from aiogram import Bot, Dispatcher, Router
-from aiogram.types import Update, Message, InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.filters import CommandStart, CommandObject
+import requests
 
-router = Router()
+def send_message(chat_id: int, text: str, reply_markup: dict = None) -> None:
+    bot_token = os.environ["TELEGRAM_BOT_TOKEN"]
+    payload = {"chat_id": chat_id, "text": text}
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+    requests.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", json=payload, timeout=10)
 
-@router.message(CommandStart(deep_link=True))
-async def handle_start_with_args(message: Message, command: CommandObject) -> None:
-    if command.args == "web_auth":
-        await handle_web_auth(message)
-    else:
-        await message.answer("Привет! Используйте кнопку \"Войти через Telegram\" на сайте.")
-
-async def handle_web_auth(message: Message) -> None:
-    user = message.from_user
+def handle_web_auth(chat_id: int, user: dict) -> None:
     token = str(uuid.uuid4())
     token_hash = hashlib.sha256(token.encode()).hexdigest()
 
@@ -167,40 +161,43 @@ async def handle_web_auth(message: Message) -> None:
         (token_hash, telegram_id, telegram_username, telegram_first_name,
          telegram_last_name, telegram_photo_url, expires_at)
         VALUES (%s, %s, %s, %s, %s, %s, %s)
-    """, (token_hash, str(user.id), user.username, user.first_name, user.last_name, None,
-          datetime.now(timezone.utc) + timedelta(minutes=5)))
+    """, (token_hash, str(user.get("id")), user.get("username"), user.get("first_name"),
+          user.get("last_name"), None, datetime.now(timezone.utc) + timedelta(minutes=5)))
     conn.commit()
     conn.close()
 
     site_url = os.environ["SITE_URL"]
     auth_url = f"{site_url}/auth/telegram/callback?token={token}"
-
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Войти на сайт", url=auth_url)]
-    ])
-    await message.answer("Авторизация готова!\n\nНажмите кнопку ниже 👇🏼\n\nСсылка действительна 5 минут", reply_markup=keyboard)
+    send_message(chat_id, "Авторизация готова!\n\nНажмите кнопку ниже 👇🏼\n\nСсылка действительна 5 минут",
+                 reply_markup={"inline_keyboard": [[{"text": "Войти на сайт", "url": auth_url}]]})
 
 def handler(event: dict, context) -> dict:
     if event.get("httpMethod") == "OPTIONS":
         return {"statusCode": 200, "headers": {"Access-Control-Allow-Origin": "*"}, "body": ""}
 
-    bot = Bot(token=os.environ["TELEGRAM_BOT_TOKEN"])
-    dp = Dispatcher()
-    dp.include_router(router)
+    body = json.loads(event.get("body", "{}"))
+    message = body.get("message")
+    if not message:
+        return {"statusCode": 200, "body": ""}
 
-    async def process():
-        update = Update.model_validate(json.loads(event.get("body", "{}")), context={"bot": bot})
-        await dp.feed_update(bot, update)
-        await bot.session.close()
+    text = message.get("text", "")
+    chat_id = message.get("chat", {}).get("id")
+    user = message.get("from", {})
 
-    asyncio.run(process())
-    return {"statusCode": 200, "body": json.dumps({"ok": True})}
+    if text.startswith("/start"):
+        parts = text.split(" ", 1)
+        if len(parts) > 1 and parts[1] == "web_auth":
+            handle_web_auth(chat_id, user)
+        else:
+            send_message(chat_id, "Привет! Используйте кнопку \"Войти через Telegram\" на сайте.")
+
+    return {"statusCode": 200, "body": ""}
 ```
 
 **requirements.txt:**
 ```
-aiogram>=3.0
 psycopg2-binary
+requests
 ```
 
 ### Шаг 5: Настройка Webhook
